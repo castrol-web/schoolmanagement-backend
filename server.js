@@ -17,7 +17,7 @@ const app = express();
 const server = createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:3001","https://schoolmanagement-frontend-25p7.onrender.com"],
+    origin: ["http://localhost:3001"],
     methods: ['GET', 'PUT', 'DELETE', 'POST'],
   }
 })
