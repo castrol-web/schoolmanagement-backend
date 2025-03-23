@@ -453,35 +453,47 @@ const adminRoutes = (io) => {
     //fetching customer balances
     router.get("/customer-balances", async (req, res) => {
         try {
-            const students = await Student.find(); // Fetch all students
-            const balances = [];
-
-            for (const student of students) {
-                const creditBalance = await CreditBalance.findOne({ studentId: student._id });
-                const invoices = await Invoice.find({ studentId: student._id, outstandingBalance: { $gt: 0 } });
-
-                let totalOwed = 0;
-                invoices.forEach(invoice => {
-                    totalOwed += invoice.outstandingBalance;
-                });
-
-                const balance = {
+            // Step 1: Fetch all students in one query
+            const students = await Student.find().lean();
+    
+            // Step 2: Fetch all credit balances and create a lookup map
+            const creditBalances = await CreditBalance.find().lean();
+            const creditBalanceMap = new Map(creditBalances.map(cb => [cb.studentId.toString(), cb.amount]));
+    
+            // Step 3: Fetch all invoices with outstanding balances and create a lookup map
+            const invoices = await Invoice.find({ outstandingBalance: { $gt: 0 } }).lean();
+            const invoiceMap = new Map();
+    
+            invoices.forEach(invoice => {
+                const studentId = invoice.studentId.toString();
+                if (!invoiceMap.has(studentId)) {
+                    invoiceMap.set(studentId, 0);
+                }
+                invoiceMap.set(studentId, invoiceMap.get(studentId) + invoice.outstandingBalance);
+            });
+    
+            // Step 4: Process all students efficiently
+            const balances = students.map(student => {
+                const studentId = student._id.toString();
+                const creditBalance = creditBalanceMap.get(studentId) || 0;
+                const totalOwed = invoiceMap.get(studentId) || 0;
+    
+                return {
                     studentId: student._id,
                     studentName: student.firstName,
                     outstandingBalance: totalOwed,
-                    creditBalance: creditBalance ? creditBalance.amount : 0,
-                    totalOwed: totalOwed - (creditBalance ? creditBalance.amount : 0),
+                    creditBalance: creditBalance,
+                    totalOwed: totalOwed - creditBalance,
                 };
-
-                balances.push(balance);
-            }
-
-            res.status(200).json(balances); // Return the data to the frontend
+            });
+    
+            res.status(200).json(balances);
         } catch (error) {
             console.error("Error fetching customer balances:", error);
             res.status(500).json({ message: "Error fetching data." });
         }
     });
+    
 
     // Fetching customer transactions
     router.get("/transactions/:id", authMiddleware, async (req, res) => {
