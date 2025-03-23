@@ -52,7 +52,7 @@ app.use(bodyParser.json());
 const mongooseUrl = process.env.MONGOOSE_CONNECTION;
 //Database connection
 try {
-  await mongoose.connect(mongooseUrl);
+  await mongoose.connect(`${mongooseUrl}`);
   console.log("DB connection successful");
 } catch (error) {
   console.error("Error connecting to database:", error);
