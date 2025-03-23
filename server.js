@@ -41,7 +41,7 @@ io.on("connection", (socket) => {
 
 //cross origin middleware 
 app.use(cors({
-  origin: ["http://localhost:3001"],
+  origin: ["http://localhost:3001","https://schoolmanagement-frontend-25p7.onrender.com"],
   methods: ['GET', 'PUT', 'DELETE', 'POST'],
 }));
 
