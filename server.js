@@ -17,7 +17,7 @@ const app = express();
 const server = createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:3001"],
+    origin: ["http://localhost:3001","https://schoolmanagement-frontend-25p7.onrender.com"],
     methods: ['GET', 'PUT', 'DELETE', 'POST'],
   }
 })
@@ -52,7 +52,7 @@ app.use(bodyParser.json());
 const mongooseUrl = process.env.MONGOOSE_CONNECTION;
 //Database connection
 try {
-  await mongoose.connect(`${mongooseUrl}`);
+  await mongoose.connect(mongooseUrl);
   console.log("DB connection successful");
 } catch (error) {
   console.error("Error connecting to database:", error);
