@@ -34,7 +34,7 @@ const invoiceSchema = new mongoose.Schema({
   payments: [
     {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "Payment", // Links to the Payment model
+      ref: "Payment",
     },
   ],
   status: {
@@ -44,12 +44,11 @@ const invoiceSchema = new mongoose.Schema({
   },
   issuedDate: {
     type: Date,
-    required:true,
+    required: true,
     default: Date.now,
   },
 });
 
-// Automatically update the status based on outstandingBalance
 invoiceSchema.pre("save", function (next) {
   if (this.outstandingBalance === 0) {
     this.status = "Paid";

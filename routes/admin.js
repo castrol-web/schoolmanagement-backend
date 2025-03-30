@@ -170,7 +170,7 @@ const adminRoutes = (io) => {
                 return res.status(403).json({ message: "Access denied!" });
             }
 
-            const { studentId, term, items, year ,issuedDate} = req.body;
+            const { studentId, term, items, year, issuedDate } = req.body;
 
             // Validate request body
             if (!studentId || !term || !items || !items.length || !year || !issuedDate) {
@@ -249,7 +249,6 @@ const adminRoutes = (io) => {
         }
     });
 
-
     //receive payments
     router.post("/payments", authMiddleware, async (req, res) => {
         try {
@@ -257,108 +256,111 @@ const adminRoutes = (io) => {
                 return res.status(403).json({ message: "Access denied!" });
             }
 
-            let { studentId, amount, paymentMethod,paymentDate } = req.body;
+            let { studentId, amount, paymentMethod, paymentDate } = req.body;
 
             if (!studentId || !amount) {
                 return res.status(400).json({ message: "Student ID and amount are required!" });
             }
 
-            // Validate studentId
-            if (!mongoose.Types.ObjectId.isValid(studentId)) {
-                return res.status(400).json({ message: "Invalid student ID!" });
-            }
             studentId = new mongoose.Types.ObjectId(studentId);
-
-            // Ensure that amount is a number
             amount = parseFloat(amount);
             if (isNaN(amount)) {
                 return res.status(400).json({ message: "Amount must be a valid number!" });
             }
 
-            // Check if the student has any invoices or if it's a prepayment
-            const invoices = await Invoice.find({ studentId, outstandingBalance: { $gt: 0 } });
             let remainingAmount = amount;
+            let appliedPayment = 0;
 
-            // Case 1: No invoices, store as credit balance
-            if (invoices.length === 0) {
-                const creditBalance = await CreditBalance.findOne({ studentId }) || new CreditBalance({ studentId, amount: 0 });
+            // Check for outstanding invoices
+            const invoices = await Invoice.find({ studentId, outstandingBalance: { $gt: 0 } }).sort({ issuedDate: 1 });
 
-                // Ensure credit balance is treated as a number
-                creditBalance.amount = parseFloat(creditBalance.amount) || 0; // Casting to number in case it's string
-                creditBalance.amount += remainingAmount; // Correctly adding the amount
+            // Create the payment record (400,000) - full payment made
+            const payment = new Payment({
+                studentId,
+                amount: amount,
+                paymentMethod,
+                paymentDate,
+                reference: "Full Payment",  // Full payment entry
+            });
 
-                // Create a new payment record
-                const newPayment = new Payment({
-                    studentId,
-                    amount: remainingAmount,
-                    paymentMethod,
-                    paymentDate,
-                    reference: "Credit Payment"
-                });
+            await payment.save();  // Save the full payment record
 
-                await newPayment.save();
-                await creditBalance.save();
-                // Emit event for real-time update
-                io.emit("creditUpdated", { studentId, newCreditBalance: creditBalance.amount });
-                return res.status(200).json({ message: "Payment stored as credit balance" });
-            }
-
-            // Case 2: Apply payment to invoices if they exist
             for (const invoice of invoices) {
                 if (remainingAmount <= 0) break;
 
                 const appliedAmount = Math.min(remainingAmount, invoice.outstandingBalance);
+                invoice.outstandingBalance -= appliedAmount;  // Update the invoice outstanding balance
 
-                // Create a new payment record
-                const newPayment = new Payment({
+                // Save the applied payment for this invoice
+                const invoicePayment = new Payment({
                     studentId,
                     invoiceId: invoice._id,
                     amount: appliedAmount,
                     paymentMethod,
                     paymentDate,
-                    reference: "Invoice Payment"
+                    reference: "Invoice Payment",  // Reference this as an invoice payment
                 });
 
-                await newPayment.save();
-
-                // Update the invoice outstanding balance
-                invoice.outstandingBalance -= appliedAmount;
-                invoice.payments.push(newPayment._id);
-
+                await invoicePayment.save();
+                invoice.payments.push(invoicePayment._id);  // Associate the payment with the invoice
                 await invoice.save();
 
-                remainingAmount -= appliedAmount;
-                // Emit event for invoice update
-                io.emit("invoiceUpdated", {
-                    studentId,
-                    invoiceId: invoice._id,
-                    newOutstandingBalance: invoice.outstandingBalance
-                });
+                remainingAmount -= appliedAmount;  // Decrease remaining amount
+                appliedPayment += appliedAmount;  // Track applied payment
             }
 
-            // If remainingAmount is still positive, store it as a credit balance
+            // If there's remaining payment after applying to invoices, store it in the CreditBalance model
             if (remainingAmount > 0) {
-                const creditBalance = await CreditBalance.findOne({ studentId }) || new CreditBalance({ studentId, amount: 0 });
-                creditBalance.amount = parseFloat(creditBalance.amount) || 0; // Ensuring it's a number
-                creditBalance.amount += remainingAmount; // Add the remaining amount to the credit balance
+                let creditBalance = await CreditBalance.findOne({ studentId });
+                if (!creditBalance) {
+                    creditBalance = new CreditBalance({ studentId, amount: 0 });
+                }
+
+                creditBalance.amount += remainingAmount;  // Add remaining balance to the credit balance
                 await creditBalance.save();
-                // Emit event for credit update
-                io.emit("creditUpdated", { studentId, newCreditBalance: creditBalance.amount });
             }
 
-            // Emit event for payment received
-            io.emit("paymentReceived", {
-                studentId,
-                amount,
-                paymentMethod
-            });
-
-            return res.status(200).json({ message: "Payment applied to outstanding invoices and/or credit balance" });
+            return res.status(200).json({ message: "Payment applied successfully" });
         } catch (error) {
             console.error("Error processing payment:", error);
             return res.status(500).json({ message: "Internal server error" });
         }
     });
+
+    // Reverse a payment
+    router.put("/payments/:id", authMiddleware, async (req, res) => {
+        try {
+            if (req.user.role !== "admin") {
+                return res.status(403).json({ message: "Access denied!" });
+            }
+
+            const payment = await Payment.findById(req.params.id);
+            if (!payment) {
+                return res.status(404).json({ message: "Payment not found!" });
+            }
+
+            if (payment.invoiceId) {
+                const invoice = await Invoice.findById(payment.invoiceId);
+                if (invoice) {
+                    invoice.outstandingBalance += payment.amount;
+                    invoice.payments = invoice.payments.filter((p) => p.toString() !== payment._id.toString());
+                    await invoice.save();
+                }
+            } else {
+                const creditBalance = await CreditBalance.findOne({ studentId: payment.studentId });
+                if (creditBalance) {
+                    creditBalance.amount -= payment.amount;
+                    await creditBalance.save();
+                }
+            }
+
+            await Payment.findByIdAndDelete(req.params.id);
+            return res.status(200).json({ message: "Payment reversed successfully" });
+        } catch (error) {
+            return res.status(500).json({ message: "Error reversing payment", error });
+        }
+    });
+
 
     //invoices for a whole class
     router.post("/generate-class-invoice", authMiddleware, async (req, res) => {
@@ -367,7 +369,7 @@ const adminRoutes = (io) => {
                 return res.status(403).json({ message: "Access denied!" });
             }
 
-            const { classId, term, year, items ,issuedDate} = req.body;
+            const { classId, term, year, items, issuedDate } = req.body;
 
             // Validate request body
             if (!classId || !term || !year || !items || !items.length) {
@@ -455,15 +457,15 @@ const adminRoutes = (io) => {
         try {
             // Step 1: Fetch all students in one query
             const students = await Student.find().lean();
-    
+
             // Step 2: Fetch all credit balances and create a lookup map
             const creditBalances = await CreditBalance.find().lean();
             const creditBalanceMap = new Map(creditBalances.map(cb => [cb.studentId.toString(), cb.amount]));
-    
+
             // Step 3: Fetch all invoices with outstanding balances and create a lookup map
             const invoices = await Invoice.find({ outstandingBalance: { $gt: 0 } }).lean();
             const invoiceMap = new Map();
-    
+
             invoices.forEach(invoice => {
                 const studentId = invoice.studentId.toString();
                 if (!invoiceMap.has(studentId)) {
@@ -471,13 +473,13 @@ const adminRoutes = (io) => {
                 }
                 invoiceMap.set(studentId, invoiceMap.get(studentId) + invoice.outstandingBalance);
             });
-    
+
             // Step 4: Process all students efficiently
             const balances = students.map(student => {
                 const studentId = student._id.toString();
                 const creditBalance = creditBalanceMap.get(studentId) || 0;
                 const totalOwed = invoiceMap.get(studentId) || 0;
-    
+
                 return {
                     studentId: student._id,
                     studentName: student.firstName,
@@ -486,14 +488,14 @@ const adminRoutes = (io) => {
                     totalOwed: totalOwed - creditBalance,
                 };
             });
-    
+
             res.status(200).json(balances);
         } catch (error) {
             console.error("Error fetching customer balances:", error);
             res.status(500).json({ message: "Error fetching data." });
         }
     });
-    
+
 
     // Fetching customer transactions
     router.get("/transactions/:id", authMiddleware, async (req, res) => {
@@ -504,37 +506,54 @@ const adminRoutes = (io) => {
 
             const studentId = req.params.id;
             if (!studentId) {
-                res.status(404).json({ message: "no id provided" })
+                return res.status(404).json({ message: "No student ID provided" });
             }
-            const payments = await Payment.find({ studentId }).sort({ paymentDate: -1 });
+
+            const payments = await Payment.find({ studentId, reference: "Full Payment" }).sort({ paymentDate: -1 });
             const invoices = await Invoice.find({ studentId }).sort({ issuedDate: -1 });
             const student = await Student.findOne({ _id: studentId });
+
             if (!student) {
-                res.status(404).json({ message: "no student found" })
+                return res.status(404).json({ message: "Student not found" });
             }
 
             if (!payments.length && !invoices.length) {
                 return res.status(404).json({ message: "No transactions found" });
             }
 
+            // Combine payments and invoices for the transaction history
             const transactions = [
                 {
                     type: "StudentInfo",
                     firstName: student.firstName,
                     lastName: student.lastName,
-                    regNo: student.regNo
+                    regNo: student.regNo,
                 },
-                ...payments.map(p => ({ type: "Payment", date: p.paymentDate, amount: p.amount, _id: p._id })),
-                ...invoices.map(i => ({ type: "Invoice", date: i.issuedDate, amount: i.totalFees, _id: i._id }))
+                ...payments.map((p) => ({
+                    type: "Payment",
+                    date: p.paymentDate,
+                    amount: p.amount,  // Total payment made (e.g., 400,000)
+                    reference: p.reference,
+                    _id: p._id,
+                })),
+                ...invoices.map((i) => ({
+                    type: "Invoice",
+                    date: i.issuedDate,
+                    amount: i.totalFees, // Total invoice amount
+                    outstandingBalance: i.outstandingBalance, // Remaining balance
+                    _id: i._id,
+                })),
             ];
 
-            res.json(transactions.sort((a, b) => new Date(b.date) - new Date(a.date)));
+            // Sort by most recent transaction date
+            const sortedTransactions = transactions.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+            res.json(sortedTransactions);
         } catch (error) {
             res.status(500).json({ message: "Error fetching transactions", error });
-            console.error("error fetching transactions", error)
+            console.error("Error fetching transactions", error);
         }
     });
-
 
     // Fetch specific payment by ID
     router.get("/payments/:id", authMiddleware, async (req, res) => {
@@ -570,23 +589,96 @@ const adminRoutes = (io) => {
         }
     });
 
-    // Delete payment
+    // Delete Payment (Handle multiple invoices)
     router.delete("/payments/:id", authMiddleware, async (req, res) => {
         try {
-            await Payment.findByIdAndDelete(req.params.id);
-            res.json({ message: "Payment deleted successfully" });
+            if (req.user.role !== "admin") {
+                return res.status(403).json({ message: "Access denied!" });
+            }
+
+            const payment = await Payment.findById(req.params.id);
+            if (!payment) {
+                return res.status(404).json({ message: "Payment not found!" });
+            }
+
+            // 1. Reverse payments applied to invoices (if the payment is applied to multiple invoices)
+            if (payment.invoiceId) {
+                const invoiceIds = Array.isArray(payment.invoiceId) ? payment.invoiceId : [payment.invoiceId]; // Ensure it's an array
+
+                for (let invoiceId of invoiceIds) {
+                    const invoice = await Invoice.findById(invoiceId);
+                    if (invoice) {
+                        // Reverse the balance for the invoice
+                        invoice.outstandingBalance += payment.amount; // Restore the outstanding balance
+
+                        // Remove payment reference from the invoice's payments array
+                        invoice.payments = invoice.payments.filter(id => id.toString() !== payment._id.toString());
+
+                        await invoice.save();
+                    }
+                }
+            }
+
+            // 2. Update the credit balance (if applicable)
+            let creditBalance = await CreditBalance.findOne({ studentId: payment.studentId });
+            if (creditBalance) {
+                creditBalance.amount -= payment.amount;  // Subtract the payment amount from the credit balance
+                await creditBalance.save();
+            }
+
+            // 3. Delete the payment record using deleteOne
+            await Payment.deleteOne({ _id: payment._id });
+
+            return res.status(200).json({ message: "Payment deleted successfully" });
         } catch (error) {
-            res.status(500).json({ message: "Error deleting payment", error });
+            console.error("Error deleting payment:", error);
+            return res.status(500).json({ message: "Internal server error" });
         }
     });
 
-    // Delete invoice
+    // Delete Invoice
     router.delete("/invoices/:id", authMiddleware, async (req, res) => {
         try {
-            await Invoice.findByIdAndDelete(req.params.id);
-            res.json({ message: "Invoice deleted successfully" });
+            if (req.user.role !== "admin") {
+                return res.status(403).json({ message: "Access denied!" });
+            }
+
+            const invoice = await Invoice.findById(req.params.id);
+            if (!invoice) {
+                return res.status(404).json({ message: "Invoice not found!" });
+            }
+
+            // Reverse payments applied to the invoice before deleting it
+            for (let paymentId of invoice.payments) {
+                const payment = await Payment.findById(paymentId);
+                if (payment) {
+                    // If the payment was applied to this invoice, reverse it
+                    if (payment.invoiceId.toString() === invoice._id.toString()) {
+                        // Reverse the balance on the invoice
+                        invoice.outstandingBalance += payment.amount;
+
+                        // Check if there is a credit balance for the student
+                        let creditBalance = await CreditBalance.findOne({ studentId: invoice.studentId });
+                        if (creditBalance) {
+                            // Subtract the payment amount from the credit balance
+                            creditBalance.amount -= payment.amount;
+                            await creditBalance.save();
+                        }
+
+                        // Remove the payment reference from the invoice's payments array
+                        invoice.payments = invoice.payments.filter(id => id.toString() !== payment._id.toString());
+                        await invoice.save();
+                    }
+                }
+            }
+
+            // Now delete the invoice
+            await Invoice.deleteOne({ _id: invoice._id });
+
+            return res.status(200).json({ message: "Invoice deleted successfully" });
         } catch (error) {
-            res.status(500).json({ message: "Error deleting invoice", error });
+            console.error("Error deleting invoice:", error);
+            return res.status(500).json({ message: "Internal server error" });
         }
     });
 
