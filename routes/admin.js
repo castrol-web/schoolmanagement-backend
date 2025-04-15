@@ -509,7 +509,7 @@ const adminRoutes = (io) => {
                 return res.status(404).json({ message: "No student ID provided" });
             }
 
-            const payments = await Payment.find({ studentId, reference: "Full Payment" }).sort({ paymentDate: -1 });
+            const payments = await Payment.find({ studentId}).sort({ paymentDate: -1 });
             const invoices = await Invoice.find({ studentId }).sort({ issuedDate: -1 });
             const student = await Student.findOne({ _id: studentId });
 
