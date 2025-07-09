@@ -10,9 +10,6 @@ const invoiceSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
-  description: {
-    type: String,
-  },
   year: {
     type: Number,
     required: true,
@@ -24,6 +21,7 @@ const invoiceSchema = new mongoose.Schema({
         type: Number,
         required: true,
       },
+       description:String,
     },
   ],
   totalFees: {
