@@ -10,6 +10,9 @@ const invoiceSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  description: {
+    type: String,
+  },
   year: {
     type: Number,
     required: true,
